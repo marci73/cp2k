@@ -126,13 +126,13 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: row_blk_sizes
       LOGICAL                                            :: new_file
       REAL(dp)                                           :: orthonormality, strace, tot_rho_r, trace
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: qs_tot_rho_r
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: nel, qs_tot_rho_r
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: j_int
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: mos_new
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_distribution_type), POINTER             :: dbcsr_dist
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s, P_im, p_xyz, rho_new
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s, P_im, P_re, p_xyz, rho_new
       TYPE(dbcsr_type), POINTER                          :: tmp_ao
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -250,7 +250,7 @@ CONTAINS
             CALL get_rtp(rtp=rtp, mos_new=mos_new)
             IF (.NOT. dft_control%qs_control%dftb .AND. .NOT. dft_control%qs_control%xtb) THEN
                IF (rtp%track_imag_density) THEN
-                  NULLIFY (P_im, p_xyz)
+                  NULLIFY (P_im, P_re, p_xyz)
                   CALL dbcsr_allocate_matrix_set(p_xyz, 3)
 
 ! Linear momentum operator
@@ -283,15 +283,26 @@ CONTAINS
                   DEALLOCATE (row_blk_sizes)
 
                   nspin = SIZE(mos_new)/2
-                  CALL qs_rho_get(rho, rho_ao_im=P_im)
+                  CALL qs_rho_get(rho, rho_ao_im=P_im, rho_ao=P_re)
                   ALLOCATE (j_int(nspin, 3))
                   j_int = 0.0_dp
+                  ALLOCATE (nel(nspin))
+                  nel  = 0.0_dp
 
                   NULLIFY (tmp_ao)
                   CALL dbcsr_init_p(tmp_ao)
                   CALL dbcsr_create(tmp_ao, template=matrix_s(1)%matrix, matrix_type=dbcsr_type_no_symmetry, name="tmp")
                   CALL cp_dbcsr_alloc_block_from_nbl(tmp_ao, sab_all)
                   CALL dbcsr_set(tmp_ao, 0.0_dp)
+
+                  
+                  DO spin = 1, nspin
+                    CALL dbcsr_set(tmp_ao, 0.0_dp)
+                        CALL dbcsr_multiply("T", "N", 1.0_dp, P_re(spin)%matrix, matrix_s(1)%matrix, &
+                                            0.0_dp, tmp_ao)
+                        CALL dbcsr_trace(tmp_ao, trace)                       
+                        nel(spin) = trace
+                  END DO
 
                   DO i = 1, 3
                      strace = 0.0_dp
@@ -301,7 +312,8 @@ CONTAINS
                                             0.0_dp, tmp_ao)
                         CALL dbcsr_trace(tmp_ao, trace)
                         strace = strace + trace
-                        j_int(spin, i) = strace
+!     dft_control%rtp_control%vec_pot(1)                  
+                        j_int(spin, i) = -trace  + dft_control%rtp_control%vec_pot(i) * nel(spin)
                      END DO
                   END DO
 !  The term -(1/V)\int{(1/2)\sum_n f_n [\psi_n^*(t)(A(t))\psi_n(t) +cc]} missing. Is it just A(t)*number of electrons?
